@@ -1,0 +1,32 @@
+spring:
+  profile:
+    active:
+      database, dev
+  application:
+    name: order-service
+  kafka:
+    bootstrap-servers: localhost:29092
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+        delivery.timeout.ms: 120000
+    listener:
+      concurrency: 3
+    consumer:
+      group-id: order-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: com.example.orderservice.order
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
