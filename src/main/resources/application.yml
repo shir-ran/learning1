@@ -1,7 +1,7 @@
 spring:
-  profile:
-    active:
-      database, dev
+#  profiles:
+#    active:
+#      database, dev
   application:
     name: order-service
   kafka:

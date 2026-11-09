@@ -11,3 +11,4 @@ Start with [`lessons/01-first-event.md`](lessons/01-first-event.md).
 3. [`Producer acknowledgements and failures`](lessons/03-producer-acknowledgements.md)
 4. [`Consumer idempotency`](lessons/04-consumer-idempotency.md)
 5. [`Consumer retries and dead-letter topics`](lessons/05-consumer-retries-and-dlt.md)
+6. [`AWS container foundation`](lessons/06-aws-container-foundation.md)
