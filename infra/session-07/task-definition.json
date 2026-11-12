@@ -1,0 +1,27 @@
+{
+  "family": "order-service-smoke",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "<execution-role-arn>",
+  "containerDefinitions": [
+    {
+      "name": "order-service",
+      "image": "<repository-uri>:session-06",
+      "essential": true,
+      "entryPoint": ["java"],
+      "command": ["-version"],
+      "user": "10001",
+      "readonlyRootFilesystem": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/order-service-session-07",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

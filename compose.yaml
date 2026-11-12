@@ -19,3 +19,36 @@ services:
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_NUM_PARTITIONS: 3
 
+  postgres:
+    image: postgres:16-alpine
+    container_name: learning-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: orders
+      POSTGRES_USER: orders
+      POSTGRES_PASSWORD: orders-local-password
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U orders -d orders" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  order-service:
+    build: .
+    image: order-service:session-06
+    container_name: learning-order-service
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: database
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/orders
+      SPRING_DATASOURCE_USERNAME: orders
+      SPRING_DATASOURCE_PASSWORD: orders-local-password
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+
