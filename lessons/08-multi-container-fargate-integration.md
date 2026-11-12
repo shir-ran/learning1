@@ -287,6 +287,29 @@ aws ecs stop-task `
 5. Which container exit code defines success, and why might the other exit
    codes be misleading?
 
+## Completed outcome
+
+- Built and pushed immutable image `order-service:session-08`, still running as
+  non-root UID `10001`.
+- Registered a four-container Fargate integration task with health-gated startup
+  for Kafka, PostgreSQL, Spring Boot, and the smoke-test client.
+- The first run failed because `readonlyRootFilesystem: true` also made `/tmp`
+  read-only, preventing embedded Tomcat from creating its temporary directory.
+- Kept the root filesystem read-only and fixed the problem narrowly: the image
+  defines `/app/tmp` for UID `10001`, the task mounts a writable ephemeral bind
+  volume there, and `java.io.tmpdir` points to that path.
+- The successful run returned an order and event ID from `POST /orders`, logged
+  the same order ID in `OrderCreatedListener`, consumed the Kafka record from
+  partition 1 at offset 0, and verified the projection in PostgreSQL.
+- The essential smoke-test container exited `0`. ECS then sent `SIGTERM` to the
+  long-running Spring and Kafka containers, producing expected exit code `143`.
+- Deregistered all experimental task-definition revisions and deleted the task,
+  cluster, temporary definition, and CloudWatch log group. ECR images and the
+  execution role remain for later exercises.
+- `AmazonECS_FullAccess` and `CloudWatchLogsFullAccess` remain attached to the
+  dedicated learning user overnight as a documented short-term exception and
+  must be removed after the next AWS session.
+
 ## References
 
 - [Fargate task networking](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/fargate-task-networking.html)
