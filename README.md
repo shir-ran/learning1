@@ -15,3 +15,4 @@ Start with [`lessons/01-first-event.md`](lessons/01-first-event.md).
 7. [`ECS and Fargate smoke task`](lessons/07-ecs-fargate-smoke-task.md)
 8. [`Multi-container Fargate integration task`](lessons/08-multi-container-fargate-integration.md)
 9. [`Least-privilege ECS access and encrypted configuration`](lessons/09-least-privilege-and-secrets.md)
+10. [`Infrastructure as Code with CloudFormation`](lessons/10-cloudformation-infrastructure-as-code.md)

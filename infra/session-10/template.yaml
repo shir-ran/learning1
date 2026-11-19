@@ -1,0 +1,225 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Cost-controlled order-service integration infrastructure for Session 10.
+  Creates an ECS cluster, CloudWatch log group, and Fargate task definition.
+
+Parameters:
+  ExecutionRoleArn:
+    Type: String
+    Description: Existing ECS task execution role ARN.
+  RepositoryUri:
+    Type: String
+    Description: Existing private ECR repository URI without an image tag.
+  DbPasswordParameterArn:
+    Type: String
+    Description: Existing SSM SecureString parameter ARN; never the secret value.
+  LogRetentionDays:
+    Type: Number
+    Default: 1
+    AllowedValues: [1, 3, 5, 7, 14, 30]
+
+Resources:
+  IntegrationCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: order-service-cfn-integration
+      ClusterSettings:
+        - Name: containerInsights
+          Value: disabled
+
+  IntegrationLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: /ecs/order-service-session-10
+      RetentionInDays: !Ref LogRetentionDays
+
+  IntegrationTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: order-service-cfn-integration
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: '1024'
+      Memory: '3072'
+      ExecutionRoleArn: !Ref ExecutionRoleArn
+      RuntimePlatform:
+        OperatingSystemFamily: LINUX
+        CpuArchitecture: X86_64
+      Volumes:
+        - Name: spring-tmp
+      ContainerDefinitions:
+        - Name: kafka
+          Image: apache/kafka:4.1.0
+          Essential: false
+          Cpu: 384
+          Memory: 1024
+          Environment:
+            - Name: KAFKA_NODE_ID
+              Value: '1'
+            - Name: KAFKA_PROCESS_ROLES
+              Value: broker,controller
+            - Name: KAFKA_LISTENERS
+              Value: CONTROLLER://:9093,PLAINTEXT://:9092
+            - Name: KAFKA_ADVERTISED_LISTENERS
+              Value: PLAINTEXT://localhost:9092
+            - Name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              Value: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+            - Name: KAFKA_CONTROLLER_LISTENER_NAMES
+              Value: CONTROLLER
+            - Name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              Value: 1@localhost:9093
+            - Name: KAFKA_INTER_BROKER_LISTENER_NAME
+              Value: PLAINTEXT
+            - Name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              Value: '1'
+            - Name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              Value: '1'
+            - Name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              Value: '1'
+            - Name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
+              Value: '0'
+            - Name: KAFKA_NUM_PARTITIONS
+              Value: '3'
+            - Name: KAFKA_HEAP_OPTS
+              Value: -Xms256m -Xmx512m
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1
+            Interval: 10
+            Timeout: 5
+            Retries: 10
+            StartPeriod: 30
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref IntegrationLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+        - Name: postgres
+          Image: postgres:16-alpine
+          Essential: false
+          Cpu: 192
+          Memory: 512
+          Environment:
+            - Name: POSTGRES_DB
+              Value: orders
+            - Name: POSTGRES_USER
+              Value: orders
+          Secrets:
+            - Name: POSTGRES_PASSWORD
+              ValueFrom: !Ref DbPasswordParameterArn
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - pg_isready -U orders -d orders
+            Interval: 5
+            Timeout: 3
+            Retries: 10
+            StartPeriod: 10
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref IntegrationLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+        - Name: order-service
+          Image: !Sub '${RepositoryUri}:session-08'
+          Essential: false
+          Cpu: 384
+          Memory: 1024
+          User: '10001'
+          ReadonlyRootFilesystem: true
+          MountPoints:
+            - SourceVolume: spring-tmp
+              ContainerPath: /app/tmp
+              ReadOnly: false
+          Environment:
+            - Name: SPRING_PROFILES_ACTIVE
+              Value: database
+            - Name: SPRING_DATASOURCE_URL
+              Value: jdbc:postgresql://localhost:5432/orders
+            - Name: SPRING_DATASOURCE_USERNAME
+              Value: orders
+            - Name: SPRING_KAFKA_BOOTSTRAP_SERVERS
+              Value: localhost:9092
+            - Name: JAVA_TOOL_OPTIONS
+              Value: -Djava.io.tmpdir=/app/tmp -XX:MaxRAMPercentage=70
+          Secrets:
+            - Name: SPRING_DATASOURCE_PASSWORD
+              ValueFrom: !Ref DbPasswordParameterArn
+          DependsOn:
+            - ContainerName: kafka
+              Condition: HEALTHY
+            - ContainerName: postgres
+              Condition: HEALTHY
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - >-
+                bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf "GET /actuator/health HTTP/1.0\r\n\r\n" >&3 && grep -q UP <&3'
+            Interval: 10
+            Timeout: 5
+            Retries: 10
+            StartPeriod: 60
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref IntegrationLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+        - Name: smoke-test
+          Image: postgres:16-alpine
+          Essential: true
+          Cpu: 64
+          Memory: 256
+          ReadonlyRootFilesystem: true
+          EntryPoint:
+            - sh
+            - -ec
+          Command:
+            - |
+              response="$(wget -qO- --header='Content-Type: application/json' --post-data='{"customerId":"fargate-smoke","totalAmount":49.90}' http://127.0.0.1:8080/orders)"
+              echo "POST /orders response: $response"
+              attempt=1
+              while [ "$attempt" -le 15 ]; do
+                count="$(psql -h 127.0.0.1 -U orders -d orders -tAc "SELECT COUNT(*) FROM order_projection WHERE customer_id = 'fargate-smoke'")"
+                if [ "$count" = "1" ]; then
+                  echo "PASS: projection found in PostgreSQL"
+                  exit 0
+                fi
+                echo "Waiting for Kafka consumer projection (attempt $attempt)"
+                sleep 2
+                attempt=$((attempt + 1))
+              done
+              echo "FAIL: projection was not created" >&2
+              exit 1
+          Secrets:
+            - Name: PGPASSWORD
+              ValueFrom: !Ref DbPasswordParameterArn
+          DependsOn:
+            - ContainerName: order-service
+              Condition: HEALTHY
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref IntegrationLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+Outputs:
+  ClusterName:
+    Description: ECS cluster created by this stack.
+    Value: !Ref IntegrationCluster
+  TaskDefinitionArn:
+    Description: Registered task definition revision ARN.
+    Value: !Ref IntegrationTaskDefinition
+  LogGroupName:
+    Description: CloudWatch log group created by this stack.
+    Value: !Ref IntegrationLogGroup

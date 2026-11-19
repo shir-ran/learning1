@@ -41,7 +41,10 @@
         "logs:DescribeLogGroups",
         "logs:DescribeLogStreams",
         "logs:GetLogEvents",
-        "logs:FilterLogEvents"
+        "logs:FilterLogEvents",
+        "logs:ListTagsForResource",
+        "logs:TagResource",
+        "logs:UntagResource"
       ],
       "Resource": "*"
     },
@@ -103,6 +106,36 @@
         "ssm:GetParameters"
       ],
       "Resource": "arn:aws:ssm:us-east-1:<account-id>:parameter/order-service/learning/*"
+    },
+    {
+      "Sid": "ValidateCloudFormationTemplates",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:GetTemplateSummary",
+        "cloudformation:ValidateTemplate"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ManageLearningStacks",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:CreateStack",
+        "cloudformation:UpdateStack",
+        "cloudformation:ContinueUpdateRollback",
+        "cloudformation:DeleteStack",
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:DescribeStackResources",
+        "cloudformation:ListStackResources",
+        "cloudformation:GetTemplate",
+        "cloudformation:CreateChangeSet",
+        "cloudformation:DescribeChangeSet",
+        "cloudformation:ExecuteChangeSet",
+        "cloudformation:DeleteChangeSet",
+        "cloudformation:ListChangeSets"
+      ],
+      "Resource": "arn:aws:cloudformation:us-east-1:<account-id>:stack/order-service-learning-*/*"
     }
   ]
 }
