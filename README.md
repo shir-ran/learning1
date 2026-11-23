@@ -17,3 +17,4 @@ Start with [`lessons/01-first-event.md`](lessons/01-first-event.md).
 9. [`Least-privilege ECS access and encrypted configuration`](lessons/09-least-privilege-and-secrets.md)
 10. [`Infrastructure as Code with CloudFormation`](lessons/10-cloudformation-infrastructure-as-code.md)
 11. [`Kafka consumer groups, rebalancing, and lag`](lessons/11-consumer-groups-rebalancing-and-lag.md)
+12. [`Transactional outbox: atomic database write`](lessons/12-transactional-outbox-atomic-write.md)

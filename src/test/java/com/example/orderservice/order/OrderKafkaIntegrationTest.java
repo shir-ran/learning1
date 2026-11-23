@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.support.KafkaHeaders;
@@ -22,7 +23,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.util.Objects;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -34,7 +35,7 @@ import static org.awaitility.Awaitility.await;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @Testcontainers
@@ -54,6 +55,9 @@ class OrderKafkaIntegrationTest {
     @MockitoSpyBean
     private OrderEventPublisher publisher;
 
+    @MockitoSpyBean
+    private OutboxEventRepository outboxEventRepository;
+
     @Autowired
     private MockMvc mockMvc;
 
@@ -71,6 +75,9 @@ class OrderKafkaIntegrationTest {
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    private OrderCommandService orderCommandService;
 
     @DynamicPropertySource
     static void configureKafka(DynamicPropertyRegistry registry) {
@@ -138,48 +145,7 @@ class OrderKafkaIntegrationTest {
     }
 
     @Test
-    void publishesViaRestAndConsumesOrderCreated() throws Exception {
-
-
-        var result = mockMvc.perform(
-                org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/orders")
-                        .contentType("application/json")
-                        .content("{\"customerId\":\"http-test-customer\",\"totalAmount\":149.90}")
-        )
-                .andExpect(request().asyncStarted())
-                .andReturn();
-
-        mockMvc.perform(asyncDispatch(result))
-                .andExpect(status().isAccepted())
-                .andExpect(jsonPath("$.orderId").isString())
-                .andExpect(jsonPath("$.eventId").isString())
-                .andReturn();
-
-        var response = objectMapper.readTree(
-                result.getResponse().getContentAsString()
-        );
-
-        UUID responseOrderId =
-                UUID.fromString(response.get("orderId").asText());
-
-        UUID responseEventId =
-                UUID.fromString(response.get("eventId").asText());
-
-        verify(listener, timeout(10_000))
-                .onOrderCreated(argThat(record ->
-                        record.key().equals(responseOrderId.toString())
-                                && record.value().orderId().equals(responseOrderId)
-                                && record.value().eventId().equals(responseEventId)
-                                && record.value().customerId().equals("http-test-customer")
-                                && record.value().totalAmount()
-                                .compareTo(new BigDecimal("149.90")) == 0
-                ));
-
-
-    }
-
-    @Test
-    void rejectsInvalidOrderWithoutPublishingEvent() throws Exception {
+    void rejectsInvalidOrderWithoutPersistingIt() throws Exception {
         String invalidRequest = """
             {
               "customerId": "invalid-customer",
@@ -194,8 +160,26 @@ class OrderKafkaIntegrationTest {
                 )
                 .andExpect(status().isBadRequest());
 
-        verify(publisher, never())
-                .publish(any(OrderCreated.class));
+//        verify(publisher, never())
+//                .publish(any(OrderCreated.class));
+        Integer orderCount = jdbcTemplate.queryForObject("""
+        SELECT COUNT(*)
+        FROM customer_order
+        WHERE customer_id = 'invalid-customer'
+        """,
+                Integer.class
+        );
+
+        Integer outboxCount = jdbcTemplate.queryForObject("""
+        SELECT COUNT(*)
+        FROM outbox_event
+        WHERE payload ->> 'customerId' = 'invalid-customer'
+        """,
+                Integer.class
+        );
+
+        assertThat(orderCount).isZero();
+        assertThat(outboxCount).isZero();
     }
 
     @Test
@@ -476,5 +460,158 @@ class OrderKafkaIntegrationTest {
                 });
     }
 
+    @Test
+    void storesOrderAndOutboxEventAtomically() {
+        var result = orderCommandService.create(
+                new CreateOrderRequest(
+                        "outbox-customer",
+                        new BigDecimal("79.90")
+                )
+        );
 
+        Integer orderCount = jdbcTemplate.queryForObject("""
+            SELECT COUNT(*)
+            FROM customer_order
+            WHERE order_id = ?
+            """,
+                Integer.class,
+                result.orderId()
+        );
+
+        Integer outboxCount = jdbcTemplate.queryForObject("""
+            SELECT COUNT(*)
+            FROM outbox_event
+            WHERE event_id = ?
+              AND aggregate_id = ?
+              AND published_at IS NULL
+            """,
+                Integer.class,
+                result.eventId(),
+                result.orderId()
+        );
+
+        assertThat(orderCount).isEqualTo(1);
+        assertThat(outboxCount).isEqualTo(1);
+
+        Map<String, Object> outboxRow = jdbcTemplate.queryForMap("""
+        SELECT aggregate_type,
+               event_type,
+               payload ->> 'eventId' AS payload_event_id,
+               payload ->> 'orderId' AS payload_order_id,
+               payload ->> 'customerId' AS payload_customer_id,
+               payload ->> 'totalAmount' AS payload_total_amount
+        FROM outbox_event
+        WHERE event_id = ?
+        """,
+                result.eventId()
+        );
+
+        assertThat(outboxRow.get("aggregate_type")).isEqualTo("Order");
+        assertThat(outboxRow.get("event_type")).isEqualTo("OrderCreated");
+        assertThat(outboxRow.get("payload_event_id"))
+                .isEqualTo(result.eventId().toString());
+        assertThat(outboxRow.get("payload_order_id"))
+                .isEqualTo(result.orderId().toString());
+        assertThat(outboxRow.get("payload_customer_id"))
+                .isEqualTo("outbox-customer");
+
+        assertThat(new BigDecimal(
+                (String) outboxRow.get("payload_total_amount")
+        )).isEqualByComparingTo("79.90");
+    }
+
+    @Test
+    void rollsBackOrderWhenOutboxInsertFails() {
+        String customerId = "rollback-" + UUID.randomUUID();
+
+        doThrow(new IllegalStateException("Simulated outbox failure"))
+                .when(outboxEventRepository)
+                .insert(argThat(event ->
+                        event.customerId().equals(customerId)
+                ));
+
+        assertThatThrownBy(() ->
+                orderCommandService.create(
+                        new CreateOrderRequest(
+                                customerId,
+                                new BigDecimal("59.90")
+                        )
+                )
+        )
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Simulated outbox failure");
+
+        Integer remainingOrders = jdbcTemplate.queryForObject("""
+            SELECT COUNT(*)
+            FROM customer_order
+            WHERE customer_id = ?
+            """,
+                Integer.class,
+                customerId
+        );
+
+        assertThat(remainingOrders).isZero();
+    }
+
+    @Test
+    void persistsOrderAndOutboxViaRest() throws Exception {
+        var result = mockMvc.perform(
+                        post("/orders")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("""
+                                    {
+                                      "customerId": "http-outbox-customer",
+                                      "totalAmount": 149.90
+                                    }
+                                    """)
+                )
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.orderId").isString())
+                .andExpect(jsonPath("$.eventId").isString())
+                .andReturn();
+
+        var response = objectMapper.readTree(
+                result.getResponse().getContentAsString()
+        );
+
+        UUID orderId = UUID.fromString(
+                response.get("orderId").asText()
+        );
+
+        UUID eventId = UUID.fromString(
+                response.get("eventId").asText()
+        );
+
+        Integer orderCount = jdbcTemplate.queryForObject("""
+            SELECT COUNT(*)
+            FROM customer_order
+            WHERE order_id = ?
+              AND customer_id = 'http-outbox-customer'
+              AND total_amount = 149.90
+            """,
+                Integer.class,
+                orderId
+        );
+
+        Integer outboxCount = jdbcTemplate.queryForObject("""
+            SELECT COUNT(*)
+            FROM outbox_event
+            WHERE event_id = ?
+              AND aggregate_id = ?
+              AND payload ->> 'orderId' = ?
+              AND payload ->> 'customerId' = 'http-outbox-customer'
+              AND published_at IS NULL
+            """,
+                Integer.class,
+                eventId,
+                orderId,
+                orderId.toString()
+        );
+
+        assertThat(orderCount).isEqualTo(1);
+        assertThat(outboxCount).isEqualTo(1);
+
+        verify(publisher, never())
+                .publish(any(OrderCreated.class));
+    }
 }
